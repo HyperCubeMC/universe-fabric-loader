@@ -11,7 +11,7 @@ plugins {
 sourceCompatibility = 1.8
 targetCompatibility = 1.8
 
-archivesBaseName = "iris-loader"
+archivesBaseName = "universe-loader"
 
 // Fetch build number from Jenkins
 def ENV = System.getenv()
