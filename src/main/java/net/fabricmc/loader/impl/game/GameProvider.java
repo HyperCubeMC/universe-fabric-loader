@@ -16,16 +16,17 @@
 
 package net.fabricmc.loader.impl.game;
 
-import java.net.URL;
 import java.nio.file.Path;
 import java.util.Collection;
-import java.util.List;
+import java.util.Objects;
 
-import net.fabricmc.api.EnvType;
 import net.fabricmc.loader.api.metadata.ModMetadata;
 import net.fabricmc.loader.impl.game.patch.GameTransformer;
+import net.fabricmc.loader.impl.launch.FabricLauncher;
+import net.fabricmc.loader.impl.util.Arguments;
+import net.fabricmc.loader.impl.util.LoaderUtil;
 
-public interface GameProvider {
+public interface GameProvider { // name directly referenced in net.fabricmc.loader.impl.launch.knot.Knot.findEmbedddedGameProvider() and service loader records
 	String getGameId();
 	String getGameName();
 	String getRawGameVersion();
@@ -36,25 +37,36 @@ public interface GameProvider {
 	Path getLaunchDirectory();
 	boolean isObfuscated();
 	boolean requiresUrlClassLoader();
-	List<Path> getGameContextJars();
 
-	boolean locateGame(EnvType envType, String[] args, ClassLoader loader);
+	boolean isEnabled();
+	boolean locateGame(FabricLauncher launcher, String[] args, ClassLoader loader);
+	void initialize(FabricLauncher launcher);
 	GameTransformer getEntrypointTransformer();
+	void unlockClassPath(FabricLauncher launcher);
 	void launch(ClassLoader loader);
+	boolean onCrash(Throwable exception, String context);
 
+	Arguments getArguments();
 	String[] getLaunchArguments(boolean sanitize);
 
 	default boolean canOpenErrorGui() {
 		return true;
 	}
 
+	default boolean hasAwtSupport() {
+		return LoaderUtil.hasAwtSupport();
+	}
+
 	class BuiltinMod {
-		public BuiltinMod(URL url, ModMetadata metadata) {
-			this.url = url;
+		public BuiltinMod(Path path, ModMetadata metadata) {
+			Objects.requireNonNull(path, "null path");
+			Objects.requireNonNull(metadata, "null metadata");
+
+			this.path = path;
 			this.metadata = metadata;
 		}
 
-		public final URL url;
+		public final Path path;
 		public final ModMetadata metadata;
 	}
 }

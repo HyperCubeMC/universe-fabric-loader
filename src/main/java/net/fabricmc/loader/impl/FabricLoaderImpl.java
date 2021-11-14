@@ -19,21 +19,21 @@ package net.fabricmc.loader.impl;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.Opcodes;
 
 import net.fabricmc.accesswidener.AccessWidener;
@@ -41,11 +41,15 @@ import net.fabricmc.accesswidener.AccessWidenerReader;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.loader.api.LanguageAdapter;
 import net.fabricmc.loader.api.MappingResolver;
+import net.fabricmc.loader.api.ModContainer;
+import net.fabricmc.loader.api.ObjectShare;
 import net.fabricmc.loader.api.SemanticVersion;
 import net.fabricmc.loader.api.entrypoint.EntrypointContainer;
+import net.fabricmc.loader.impl.discovery.ArgumentModCandidateFinder;
 import net.fabricmc.loader.impl.discovery.ClasspathModCandidateFinder;
 import net.fabricmc.loader.impl.discovery.DirectoryModCandidateFinder;
 import net.fabricmc.loader.impl.discovery.ModCandidate;
+import net.fabricmc.loader.impl.discovery.ModDiscoverer;
 import net.fabricmc.loader.impl.discovery.ModResolutionException;
 import net.fabricmc.loader.impl.discovery.ModResolver;
 import net.fabricmc.loader.impl.discovery.RuntimeModRemapper;
@@ -59,6 +63,8 @@ import net.fabricmc.loader.impl.metadata.EntrypointMetadata;
 import net.fabricmc.loader.impl.metadata.LoaderModMetadata;
 import net.fabricmc.loader.impl.util.DefaultLanguageAdapter;
 import net.fabricmc.loader.impl.util.SystemProperties;
+import net.fabricmc.loader.impl.util.log.Log;
+import net.fabricmc.loader.impl.util.log.LogCategory;
 
 @SuppressWarnings("deprecation")
 public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
@@ -66,14 +72,22 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 
 	public static final int ASM_VERSION = Opcodes.ASM9;
 
-	protected static Logger LOGGER = LogManager.getFormatterLogger("Fabric|Loader");
+	public static final String MOD_ID = "fabricloader";
+
+	public static final String CACHE_DIR_NAME = ".fabric"; // relative to game dir
+	private static final String PROCESSED_MODS_DIR_NAME = "processedMods"; // relative to cache dir
+	public static final String REMAPPED_JARS_DIR_NAME = "remappedJars"; // relative to cache dir
+	private static final String TMP_DIR_NAME = "tmp"; // relative to cache dir
 
 	protected final Map<String, ModContainerImpl> modMap = new HashMap<>();
+	private List<ModCandidate> modCandidates;
 	protected List<ModContainerImpl> mods = new ArrayList<>();
 
 	private final Map<String, LanguageAdapter> adapterMap = new HashMap<>();
 	private final EntrypointStorage entrypointStorage = new EntrypointStorage();
 	private final AccessWidener accessWidener = new AccessWidener();
+
+	private final ObjectShare objectShare = new ObjectShareImpl();
 
 	private boolean frozen = false;
 
@@ -91,7 +105,7 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 	 */
 	public void freeze() {
 		if (frozen) {
-			throw new RuntimeException("Already frozen!");
+			throw new IllegalStateException("Already frozen!");
 		}
 
 		frozen = true;
@@ -173,59 +187,119 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 	}
 
 	private void setup() throws ModResolutionException {
-		ModResolver resolver = new ModResolver();
-		resolver.addCandidateFinder(new ClasspathModCandidateFinder());
-		resolver.addCandidateFinder(new DirectoryModCandidateFinder(gameDir.resolve("universe-reserved"), isDevelopmentEnvironment()));
-		Map<String, ModCandidate> candidateMap = resolver.resolve(this);
+		boolean remapRegularMods = isDevelopmentEnvironment();
 
-		String modListText = candidateMap.values().stream()
-				.sorted(Comparator.comparing(candidate -> candidate.getInfo().getId()))
-				.map(candidate -> String.format("\t- %s@%s", candidate.getInfo().getId(), candidate.getInfo().getVersion().getFriendlyString()))
+		// discover mods
+
+		ModDiscoverer discoverer = new ModDiscoverer();
+		discoverer.addCandidateFinder(new ClasspathModCandidateFinder());
+		discoverer.addCandidateFinder(new DirectoryModCandidateFinder(gameDir.resolve("universe-reserved").resolve(getGameProvider().getRawGameVersion()), remapRegularMods));
+		discoverer.addCandidateFinder(new ArgumentModCandidateFinder(remapRegularMods));
+
+		modCandidates = discoverer.discoverMods(this);
+
+		// resolve mods
+
+		modCandidates = ModResolver.resolve(modCandidates, getEnvironmentType());
+
+		// dump mod list
+
+		String modListText = modCandidates.stream()
+				.map(candidate -> String.format("\t- %s %s", candidate.getId(), candidate.getVersion().getFriendlyString()))
 				.collect(Collectors.joining("\n"));
 
-		String modText;
-		switch (candidateMap.values().size()) {
-		case 0:
-			modText = "Loading %d mods";
-			break;
-		case 1:
-			modText = "Loading %d mod:";
-			break;
-		default:
-			modText = "Loading %d mods:";
-			break;
-		}
-
-		LOGGER.info("[%s] " + modText + "%n%s", getClass().getSimpleName(), candidateMap.values().size(), modListText);
+		int count = modCandidates.size();
+		Log.info(LogCategory.GENERAL, "Loading %d mod%s:%n%s", count, count != 1 ? "s" : "", modListText);
 
 		if (DependencyOverrides.INSTANCE.getDependencyOverrides().size() > 0) {
-			LOGGER.info(String.format("Dependencies overridden for \"%s\"", String.join(", ", DependencyOverrides.INSTANCE.getDependencyOverrides().keySet())));
+			Log.info(LogCategory.GENERAL, "Dependencies overridden for \"%s\"", String.join(", ", DependencyOverrides.INSTANCE.getDependencyOverrides()));
 		}
 
-		boolean runtimeModRemapping = isDevelopmentEnvironment();
+		Path cacheDir = gameDir.resolve(CACHE_DIR_NAME);
+		Path outputdir = cacheDir.resolve(PROCESSED_MODS_DIR_NAME);
 
-		if (runtimeModRemapping && System.getProperty(SystemProperties.REMAP_CLASSPATH_FILE) == null) {
-			LOGGER.warn("Runtime mod remapping disabled due to no fabric.remapClasspathFile being specified. You may need to update loom.");
-			runtimeModRemapping = false;
-		}
+		// runtime mod remapping
 
-		if (runtimeModRemapping) {
-			for (ModCandidate candidate : RuntimeModRemapper.remap(candidateMap.values(), ModResolver.getInMemoryFs())) {
-				addMod(candidate);
-			}
-		} else {
-			for (ModCandidate candidate : candidateMap.values()) {
-				addMod(candidate);
+		if (remapRegularMods) {
+			if (System.getProperty(SystemProperties.REMAP_CLASSPATH_FILE) == null) {
+				Log.warn(LogCategory.MOD_REMAP, "Runtime mod remapping disabled due to no fabric.remapClasspathFile being specified. You may need to update loom.");
+			} else {
+				RuntimeModRemapper.remap(modCandidates, cacheDir.resolve(TMP_DIR_NAME), outputdir);
 			}
 		}
+
+		// shuffle mods in-dev to reduce the risk of false order reliance, apply late load requests
+
+		if (isDevelopmentEnvironment() && System.getProperty(SystemProperties.DEBUG_DISABLE_MOD_SHUFFLE) == null) {
+			Collections.shuffle(modCandidates);
+		}
+
+		String modsToLoadLate = System.getProperty(SystemProperties.DEBUG_LOAD_LATE);
+
+		if (modsToLoadLate != null) {
+			for (String modId : modsToLoadLate.split(",")) {
+				for (Iterator<ModCandidate> it = modCandidates.iterator(); it.hasNext(); ) {
+					ModCandidate mod = it.next();
+
+					if (mod.getId().equals(modId)) {
+						it.remove();
+						modCandidates.add(mod);
+						break;
+					}
+				}
+			}
+		}
+
+		// add mods
+
+		for (ModCandidate mod : modCandidates) {
+			if (!mod.hasPath() && !mod.isBuiltin()) {
+				try {
+					mod.setPath(mod.copyToDir(outputdir, false));
+				} catch (IOException e) {
+					throw new RuntimeException("Error extracting mod "+mod, e);
+				}
+			}
+
+			addMod(mod);
+		}
+
+		modCandidates = null;
 	}
 
 	private void finishModLoading() {
 		// add mods to classpath
 		// TODO: This can probably be made safer, but that's a long-term goal
 		for (ModContainerImpl mod : mods) {
-			if (!mod.getInfo().getId().equals("fabricloader") && !mod.getInfo().getType().equals("builtin")) {
-				FabricLauncherBase.getLauncher().propose(mod.getOriginUrl());
+			if (!mod.getMetadata().getId().equals(MOD_ID) && !mod.getInfo().getType().equals("builtin")) {
+				FabricLauncherBase.getLauncher().addToClassPath(mod.getOriginPath());
+			}
+		}
+
+		if (isDevelopmentEnvironment()) {
+			// Many development environments will provide classes and resources as separate directories to the classpath.
+			// As such, we're adding them to the classpath here and now.
+			// To avoid tripping loader-side checks, we also don't add URLs already in modsList.
+			// TODO: Perhaps a better solution would be to add the Sources of all parsed entrypoints. But this will do, for now.
+
+			Set<Path> knownModPaths = new HashSet<>();
+
+			for (ModContainerImpl mod : mods) {
+				knownModPaths.add(mod.getOriginPath().toAbsolutePath().normalize());
+			}
+
+			// suppress fabric loader explicitly in case its fabric.mod.json is in a different folder from the classes
+			Path fabricLoaderPath = ClasspathModCandidateFinder.getFabricLoaderPath();
+			if (fabricLoaderPath != null) knownModPaths.add(fabricLoaderPath);
+
+			for (String pathName : System.getProperty("java.class.path", "").split(File.pathSeparator)) {
+				if (pathName.isEmpty() || pathName.endsWith("*")) continue;
+
+				Path path = Paths.get(pathName).toAbsolutePath().normalize();
+
+				if (Files.isDirectory(path) && knownModPaths.add(path)) {
+					FabricLauncherBase.getLauncher().addToClassPath(path);
+				}
 			}
 		}
 
@@ -261,13 +335,32 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 	}
 
 	@Override
+	public ObjectShare getObjectShare() {
+		return objectShare;
+	}
+
+	public ModCandidate getModCandidate(String id) {
+		if (modCandidates == null) return null;
+
+		for (ModCandidate mod : modCandidates) {
+			if (mod.getId().equals(id)) return mod;
+		}
+
+		return null;
+	}
+
+	@Override
 	public Optional<net.fabricmc.loader.api.ModContainer> getModContainer(String id) {
 		return Optional.ofNullable(modMap.get(id));
 	}
 
 	@Override
-	public Collection<net.fabricmc.loader.api.ModContainer> getAllMods() {
+	public Collection<ModContainer> getAllMods() {
 		return Collections.unmodifiableList(mods);
+	}
+
+	public List<ModContainerImpl> getModsInternal() {
+		return mods;
 	}
 
 	@Override
@@ -280,27 +373,14 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 		return FabricLauncherBase.getLauncher().isDevelopment();
 	}
 
-	protected void addMod(ModCandidate candidate) throws ModResolutionException {
-		LoaderModMetadata info = candidate.getInfo();
-		URL originUrl = candidate.getOriginUrl();
+	private void addMod(ModCandidate candidate) throws ModResolutionException {
+		LoaderModMetadata info = candidate.getMetadata();
 
-		if (modMap.containsKey(info.getId())) {
-			throw new ModResolutionException("Duplicate mod ID: " + info.getId() + "! (" + modMap.get(info.getId()).getOriginUrl().getFile() + ", " + originUrl.getFile() + ")");
-		}
-
-		if (!info.loadsInEnvironment(getEnvironmentType())) {
-			return;
-		}
-
-		ModContainerImpl container = new ModContainerImpl(info, originUrl);
+		ModContainerImpl container = new ModContainerImpl(info, candidate.getPath());
 		mods.add(container);
 		modMap.put(info.getId(), container);
 
 		for (String provides : info.getProvides()) {
-			if (modMap.containsKey(provides)) {
-				throw new ModResolutionException("Duplicate provided alias: " + provides + "! (" + modMap.get(info.getId()).getOriginUrl().getFile() + ", " + originUrl.getFile() + ")");
-			}
-
 			modMap.put(provides, container);
 		}
 	}
@@ -308,45 +388,14 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 	protected void postprocessModMetadata() {
 		for (ModContainerImpl mod : mods) {
 			if (!(mod.getInfo().getVersion() instanceof SemanticVersion)) {
-				LOGGER.warn("Mod `" + mod.getInfo().getId() + "` (" + mod.getInfo().getVersion().getFriendlyString() + ") does not respect SemVer - comparison support is limited.");
+				Log.warn(LogCategory.METADATA, "Mod `%s` (%s) does not respect SemVer - comparison support is limited.",
+						mod.getInfo().getId(), mod.getInfo().getVersion().getFriendlyString());
 			} else if (((SemanticVersion) mod.getInfo().getVersion()).getVersionComponentCount() >= 4) {
-				LOGGER.warn("Mod `" + mod.getInfo().getId() + "` (" + mod.getInfo().getVersion().getFriendlyString() + ") uses more dot-separated version components than SemVer allows; support for this is currently not guaranteed.");
+				Log.warn(LogCategory.METADATA, "Mod `%s` (%s) uses more dot-separated version components than SemVer allows; support for this is currently not guaranteed.",
+						mod.getInfo().getId(), mod.getInfo().getVersion().getFriendlyString());
 			}
 		}
 	}
-
-	/* private void sortMods() {
-		LOGGER.debug("Sorting mods");
-
-		LinkedList<ModContainer> sorted = new LinkedList<>();
-
-		for (ModContainer mod : mods) {
-			if (sorted.isEmpty() || mod.getInfo().getRequires().size() == 0) {
-				sorted.addFirst(mod);
-			} else {
-				boolean b = false;
-
-				l1: for (int i = 0; i < sorted.size(); i++) {
-					for (Map.Entry<String, ModMetadataV0.Dependency> entry : sorted.get(i).getInfo().getRequires().entrySet()) {
-						String depId = entry.getKey();
-						ModMetadataV0.Dependency dep = entry.getValue();
-
-						if (depId.equalsIgnoreCase(mod.getInfo().getId()) && dep.satisfiedBy(mod.getInfo())) {
-							sorted.add(i, mod);
-							b = true;
-							break l1;
-						}
-					}
-				}
-
-				if (!b) {
-					sorted.addLast(mod);
-				}
-			}
-		}
-
-		mods = sorted;
-	} */
 
 	private void setupLanguageAdapters() {
 		adapterMap.put("default", DefaultLanguageAdapter.INSTANCE);
@@ -381,7 +430,7 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 					}
 				}
 			} catch (Exception e) {
-				throw new RuntimeException(String.format("Failed to setup mod %s (%s)", mod.getInfo().getName(), mod.getOriginUrl().getFile()), e);
+				throw new RuntimeException(String.format("Failed to setup mod %s (%s)", mod.getInfo().getName(), mod.getOriginPath()), e);
 			}
 		}
 	}
@@ -432,12 +481,13 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 
 			if (!matchesKnot) {
 				if (containsKnot) {
-					getLogger().info("Environment: Target class loader is parent of game class loader.");
+					Log.info(LogCategory.KNOT, "Environment: Target class loader is parent of game class loader.");
 				} else {
-					getLogger().warn("\n\n* CLASS LOADER MISMATCH! THIS IS VERY BAD AND WILL PROBABLY CAUSE WEIRD ISSUES! *\n"
-							+ " - Expected game class loader: " + FabricLauncherBase.getLauncher().getTargetClassLoader() + "\n"
-							+ " - Actual game class loader: " + gameClassLoader + "\n"
-							+ "Could not find the expected class loader in game class loader parents!\n");
+					Log.warn(LogCategory.KNOT, "\n\n* CLASS LOADER MISMATCH! THIS IS VERY BAD AND WILL PROBABLY CAUSE WEIRD ISSUES! *\n"
+							+ " - Expected game class loader: %s\n"
+							+ " - Actual game class loader: %s\n"
+							+ "Could not find the expected class loader in game class loader parents!\n",
+							FabricLauncherBase.getLauncher().getTargetClassLoader(), gameClassLoader);
 				}
 			}
 		}
@@ -447,11 +497,12 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 		if (gameDir != null) {
 			try {
 				if (!gameDir.toRealPath().equals(newRunDir.toRealPath())) {
-					getLogger().warn("Inconsistent game execution directories: engine says " + newRunDir.toRealPath() + ", while initializer says " + gameDir.toRealPath() + "...");
+					Log.warn(LogCategory.GENERAL, "Inconsistent game execution directories: engine says %s, while initializer says %s...",
+							newRunDir.toRealPath(), gameDir.toRealPath());
 					setGameDir(newRunDir);
 				}
 			} catch (IOException e) {
-				getLogger().warn("Exception while checking game execution directory consistency!", e);
+				Log.warn(LogCategory.GENERAL, "Exception while checking game execution directory consistency!", e);
 			}
 		} else {
 			setGameDir(newRunDir);
@@ -460,10 +511,6 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 
 	public AccessWidener getAccessWidener() {
 		return accessWidener;
-	}
-
-	public Logger getLogger() {
-		return LOGGER;
 	}
 
 	/**

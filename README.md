@@ -1,7 +1,7 @@
-fabric-loader
+universe-fabric-loader
 ===========
 
-The loader for mods under Fabric. It provides mod loading facilities and useful abstractions for other mods to use.
+A custom fabric loader for my Universe modpack installer, based off Fabric loader.
 
 ## License
 

@@ -27,14 +27,16 @@ import net.fabricmc.loader.api.EntrypointException;
 import net.fabricmc.loader.api.LanguageAdapter;
 import net.fabricmc.loader.api.LanguageAdapterException;
 import net.fabricmc.loader.api.entrypoint.EntrypointContainer;
-import net.fabricmc.loader.impl.FabricLoaderImpl;
 import net.fabricmc.loader.impl.ModContainerImpl;
 import net.fabricmc.loader.impl.launch.FabricLauncherBase;
 import net.fabricmc.loader.impl.metadata.EntrypointMetadata;
+import net.fabricmc.loader.impl.util.log.Log;
+import net.fabricmc.loader.impl.util.log.LogCategory;
 
 public final class EntrypointStorage {
 	interface Entry {
 		<T> T getOrCreate(Class<T> type) throws Exception;
+		boolean isOptional();
 
 		ModContainerImpl getModContainer();
 	}
@@ -77,6 +79,11 @@ public final class EntrypointStorage {
 		}
 
 		@Override
+		public boolean isOptional() {
+			return true;
+		}
+
+		@Override
 		public ModContainerImpl getModContainer() {
 			return mod;
 		}
@@ -97,7 +104,7 @@ public final class EntrypointStorage {
 
 		@Override
 		public String toString() {
-			return mod.getInfo().getId() + "->(0.3.x)" + value;
+			return mod.getMetadata().getId() + "->(0.3.x)" + value;
 		}
 
 		@SuppressWarnings("unchecked")
@@ -108,11 +115,17 @@ public final class EntrypointStorage {
 
 			if (ret == null) {
 				ret = adapter.create(mod, value, type);
+				assert ret != null;
 				T prev = (T) instanceMap.putIfAbsent(type, ret);
 				if (prev != null) ret = prev;
 			}
 
 			return ret;
+		}
+
+		@Override
+		public boolean isOptional() {
+			return false;
 		}
 
 		@Override
@@ -128,7 +141,7 @@ public final class EntrypointStorage {
 	}
 
 	public void addDeprecated(ModContainerImpl modContainer, String adapter, String value) throws ClassNotFoundException, LanguageAdapterException {
-		FabricLoaderImpl.INSTANCE.getLogger().debug("Registering 0.3.x old-style initializer " + value + " for mod " + modContainer.getInfo().getId());
+		Log.debug(LogCategory.ENTRYPOINT, "Registering 0.3.x old-style initializer %s for mod %s", value, modContainer.getMetadata().getId());
 		OldEntry oe = new OldEntry(modContainer, adapter, value);
 		getOrCreateEntries("main").add(oe);
 		getOrCreateEntries("client").add(oe);
@@ -137,10 +150,10 @@ public final class EntrypointStorage {
 
 	public void add(ModContainerImpl modContainer, String key, EntrypointMetadata metadata, Map<String, LanguageAdapter> adapterMap) throws Exception {
 		if (!adapterMap.containsKey(metadata.getAdapter())) {
-			throw new Exception("Could not find adapter '" + metadata.getAdapter() + "' (mod " + modContainer.getInfo().getId() + "!)");
+			throw new Exception("Could not find adapter '" + metadata.getAdapter() + "' (mod " + modContainer.getMetadata().getId() + "!)");
 		}
 
-		FabricLoaderImpl.INSTANCE.getLogger().debug("Registering new-style initializer " + metadata.getValue() + " for mod " + modContainer.getInfo().getId() + " (key " + key + ")");
+		Log.debug(LogCategory.ENTRYPOINT, "Registering new-style initializer %s for mod %s (key %s)", metadata.getValue(), modContainer.getMetadata().getId(), key);
 		getOrCreateEntries(key).add(new NewEntry(
 				modContainer, adapterMap.get(metadata.getAdapter()), metadata.getValue()
 				));
@@ -181,15 +194,40 @@ public final class EntrypointStorage {
 		return results;
 	}
 
+	@SuppressWarnings("deprecation")
 	public <T> List<EntrypointContainer<T>> getEntrypointContainers(String key, Class<T> type) {
 		List<Entry> entries = entryMap.get(key);
 		if (entries == null) return Collections.emptyList();
 
 		List<EntrypointContainer<T>> results = new ArrayList<>(entries.size());
+		EntrypointException exc = null;
 
 		for (Entry entry : entries) {
-			results.add(new EntrypointContainerImpl<>(key, type, entry));
+			EntrypointContainerImpl<T> container;
+
+			if (entry.isOptional()) {
+				try {
+					T instance = entry.getOrCreate(type);
+					if (instance == null) continue;
+
+					container = new EntrypointContainerImpl<>(entry, instance);
+				} catch (Throwable t) {
+					if (exc == null) {
+						exc = new EntrypointException(key, entry.getModContainer().getMetadata().getId(), t);
+					} else {
+						exc.addSuppressed(t);
+					}
+
+					continue;
+				}
+			} else {
+				container = new EntrypointContainerImpl<>(key, type, entry);
+			}
+
+			results.add(container);
 		}
+
+		if (exc != null) throw exc;
 
 		return results;
 	}

@@ -22,8 +22,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import org.apache.logging.log4j.Logger;
-
 import net.fabricmc.api.EnvType;
 import net.fabricmc.loader.api.Version;
 import net.fabricmc.loader.api.metadata.ContactInformation;
@@ -39,9 +37,12 @@ import net.fabricmc.loader.impl.metadata.NestedJarEntry;
 
 class BuiltinMetadataWrapper extends AbstractModMetadata implements LoaderModMetadata {
 	private final ModMetadata parent;
+	private Version version;
 
 	BuiltinMetadataWrapper(ModMetadata parent) {
 		this.parent = parent;
+
+		version = parent.getVersion();
 	}
 
 	@Override
@@ -61,7 +62,12 @@ class BuiltinMetadataWrapper extends AbstractModMetadata implements LoaderModMet
 
 	@Override
 	public Version getVersion() {
-		return parent.getVersion();
+		return version;
+	}
+
+	@Override
+	public void setVersion(Version version) {
+		this.version = version;
 	}
 
 	@Override
@@ -70,28 +76,8 @@ class BuiltinMetadataWrapper extends AbstractModMetadata implements LoaderModMet
 	}
 
 	@Override
-	public Collection<ModDependency> getDepends() {
-		return parent.getDepends();
-	}
-
-	@Override
-	public Collection<ModDependency> getRecommends() {
-		return parent.getRecommends();
-	}
-
-	@Override
-	public Collection<ModDependency> getSuggests() {
-		return parent.getSuggests();
-	}
-
-	@Override
-	public Collection<ModDependency> getConflicts() {
-		return parent.getConflicts();
-	}
-
-	@Override
-	public Collection<ModDependency> getBreaks() {
-		return parent.getBreaks();
+	public Collection<ModDependency> getDependencies() {
+		return parent.getDependencies();
 	}
 
 	@Override
@@ -190,5 +176,5 @@ class BuiltinMetadataWrapper extends AbstractModMetadata implements LoaderModMet
 	}
 
 	@Override
-	public void emitFormatWarnings(Logger logger) { }
+	public void emitFormatWarnings() { }
 }

@@ -19,7 +19,6 @@ package net.fabricmc.loader.impl.metadata;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.NavigableMap;
@@ -34,7 +33,7 @@ import net.fabricmc.loader.api.metadata.ModDependency;
 import net.fabricmc.loader.api.metadata.ModEnvironment;
 import net.fabricmc.loader.api.metadata.ModMetadata;
 import net.fabricmc.loader.api.metadata.Person;
-import net.fabricmc.loader.impl.util.version.VersionDeserializer;
+import net.fabricmc.loader.impl.util.version.VersionParser;
 
 public final class BuiltinModMetadata extends AbstractModMetadata {
 	private final String id;
@@ -47,11 +46,7 @@ public final class BuiltinModMetadata extends AbstractModMetadata {
 	private final ContactInformation contact;
 	private final Collection<String> license;
 	private final NavigableMap<Integer, String> icons;
-	private final Collection<ModDependency> depends;
-	private final Collection<ModDependency> recommends;
-	private final Collection<ModDependency> suggests;
-	private final Collection<ModDependency> conflicts;
-	private final Collection<ModDependency> breaks;
+	private final Collection<ModDependency> dependencies;
 
 	private BuiltinModMetadata(String id, Version version,
 			ModEnvironment environment,
@@ -60,31 +55,23 @@ public final class BuiltinModMetadata extends AbstractModMetadata {
 			ContactInformation contact,
 			Collection<String> license,
 			NavigableMap<Integer, String> icons,
-			Map<String, ModDependency> depends,
-			Map<String, ModDependency> recommends,
-			Map<String, ModDependency> suggests,
-			Map<String, ModDependency> conflicts,
-			Map<String, ModDependency> breaks) {
+			Collection<ModDependency> dependencies) {
 		this.id = id;
 		this.version = version;
 		this.environment = environment;
 		this.name = name;
 		this.description = description;
-		this.authors = authors;
-		this.contributors = contributors;
+		this.authors = Collections.unmodifiableCollection(authors);
+		this.contributors = Collections.unmodifiableCollection(contributors);
 		this.contact = contact;
-		this.license = license;
+		this.license = Collections.unmodifiableCollection(license);
 		this.icons = icons;
-		this.depends = DependencyOverrides.INSTANCE.getActiveDependencyMap("depends", id, Collections.unmodifiableMap(depends)).values();
-		this.recommends = DependencyOverrides.INSTANCE.getActiveDependencyMap("recommends", id, Collections.unmodifiableMap(recommends)).values();
-		this.suggests = DependencyOverrides.INSTANCE.getActiveDependencyMap("suggests", id, Collections.unmodifiableMap(suggests)).values();
-		this.conflicts = DependencyOverrides.INSTANCE.getActiveDependencyMap("conflicts", id, Collections.unmodifiableMap(conflicts)).values();
-		this.breaks = DependencyOverrides.INSTANCE.getActiveDependencyMap("breaks", id, Collections.unmodifiableMap(breaks)).values();
+		this.dependencies = Collections.unmodifiableCollection(DependencyOverrides.INSTANCE.apply(id, dependencies));
 	}
 
 	@Override
 	public String getType() {
-		return "builtin";
+		return TYPE_BUILTIN;
 	}
 
 	@Override
@@ -149,28 +136,8 @@ public final class BuiltinModMetadata extends AbstractModMetadata {
 	}
 
 	@Override
-	public Collection<ModDependency> getDepends() {
-		return depends;
-	}
-
-	@Override
-	public Collection<ModDependency> getRecommends() {
-		return recommends;
-	}
-
-	@Override
-	public Collection<ModDependency> getSuggests() {
-		return suggests;
-	}
-
-	@Override
-	public Collection<ModDependency> getConflicts() {
-		return conflicts;
-	}
-
-	@Override
-	public Collection<ModDependency> getBreaks() {
-		return breaks;
+	public Collection<ModDependency> getDependencies() {
+		return dependencies;
 	}
 
 	@Override
@@ -199,17 +166,13 @@ public final class BuiltinModMetadata extends AbstractModMetadata {
 		private ContactInformation contact = ContactInformation.EMPTY;
 		private final Collection<String> license = new ArrayList<>();
 		private final NavigableMap<Integer, String> icons = new TreeMap<>();
-		private final Map<String, ModDependency> depends = new HashMap<>();
-		private final Map<String, ModDependency> recommends = new HashMap<>();
-		private final Map<String, ModDependency> suggests = new HashMap<>();
-		private final Map<String, ModDependency> conflicts = new HashMap<>();
-		private final Map<String, ModDependency> breaks = new HashMap<>();
+		private final Collection<ModDependency> dependencies = new ArrayList<>();
 
 		public Builder(String id, String version) {
 			this.name = this.id = id;
 
 			try {
-				this.version = VersionDeserializer.deserializeSemantic(version);
+				this.version = VersionParser.parseSemantic(version);
 			} catch (VersionParsingException e) {
 				throw new RuntimeException(e);
 			}
@@ -255,39 +218,13 @@ public final class BuiltinModMetadata extends AbstractModMetadata {
 			return this;
 		}
 
-		public Builder addDepends(ModDependency dependency) {
-			addDependency("depends", this.depends, dependency);
+		public Builder addDependency(ModDependency dependency) {
+			this.dependencies.add(dependency);
 			return this;
-		}
-
-		public Builder addRecommends(ModDependency dependency) {
-			addDependency("recommends", this.recommends, dependency);
-			return this;
-		}
-
-		public Builder addSuggests(ModDependency dependency) {
-			addDependency("suggests", this.suggests, dependency);
-			return this;
-		}
-
-		public Builder addConflicts(ModDependency dependency) {
-			addDependency("conflicts", this.conflicts, dependency);
-			return this;
-		}
-
-		public Builder addBreaks(ModDependency dependency) {
-			addDependency("breaks", this.breaks, dependency);
-			return this;
-		}
-
-		private void addDependency(String type, Map<String, ModDependency> to, ModDependency dependency) {
-			if (to.put(dependency.getModId(), dependency) != null) {
-				throw new IllegalArgumentException("Duplicate " + type + " specified for " + dependency.getModId());
-			}
 		}
 
 		public ModMetadata build() {
-			return new BuiltinModMetadata(id, version, environment, name, description, authors, contributors, contact, license, icons, depends, recommends, suggests, conflicts, breaks);
+			return new BuiltinModMetadata(id, version, environment, name, description, authors, contributors, contact, license, icons, dependencies);
 		}
 
 		private static Person createPerson(String name, Map<String, String> contactMap) {
