@@ -32,7 +32,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import org.objectweb.asm.Opcodes;
 
@@ -55,12 +54,12 @@ import net.fabricmc.loader.impl.discovery.ModResolver;
 import net.fabricmc.loader.impl.discovery.RuntimeModRemapper;
 import net.fabricmc.loader.impl.entrypoint.EntrypointStorage;
 import net.fabricmc.loader.impl.game.GameProvider;
-import net.fabricmc.loader.impl.gui.FabricGuiEntry;
 import net.fabricmc.loader.impl.launch.FabricLauncherBase;
 import net.fabricmc.loader.impl.launch.knot.Knot;
 import net.fabricmc.loader.impl.metadata.DependencyOverrides;
 import net.fabricmc.loader.impl.metadata.EntrypointMetadata;
 import net.fabricmc.loader.impl.metadata.LoaderModMetadata;
+import net.fabricmc.loader.impl.metadata.VersionOverrides;
 import net.fabricmc.loader.impl.util.DefaultLanguageAdapter;
 import net.fabricmc.loader.impl.util.SystemProperties;
 import net.fabricmc.loader.impl.util.log.Log;
@@ -115,6 +114,10 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 	public GameProvider getGameProvider() {
 		if (provider == null) throw new IllegalStateException("game provider not set (yet)");
 
+		return provider;
+	}
+
+	public GameProvider tryGetGameProvider() {
 		return provider;
 	}
 
@@ -182,7 +185,7 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 		try {
 			setup();
 		} catch (ModResolutionException exception) {
-			FabricGuiEntry.displayCriticalError(exception, true);
+			throw new FormattedException("Incompatible mod set!", exception);
 		}
 	}
 
@@ -198,22 +201,46 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 
 		modCandidates = discoverer.discoverMods(this);
 
+		// apply version and dependency overrides
+
+		VersionOverrides versionOverrides = new VersionOverrides();
+		versionOverrides.apply(modCandidates);
+
+		DependencyOverrides depOverrides = new DependencyOverrides(configDir);
+		depOverrides.apply(modCandidates);
+
+		if (!versionOverrides.getAffectedModIds().isEmpty()) {
+			Log.info(LogCategory.GENERAL, "Versions overridden for %s", String.join(", ", versionOverrides.getAffectedModIds()));
+		}
+
+		if (!depOverrides.getAffectedModIds().isEmpty()) {
+			Log.info(LogCategory.GENERAL, "Dependencies overridden for %s", String.join(", ", depOverrides.getAffectedModIds()));
+		}
+
 		// resolve mods
 
 		modCandidates = ModResolver.resolve(modCandidates, getEnvironmentType());
 
 		// dump mod list
 
-		String modListText = modCandidates.stream()
-				.map(candidate -> String.format("\t- %s %s", candidate.getId(), candidate.getVersion().getFriendlyString()))
-				.collect(Collectors.joining("\n"));
+		StringBuilder modListText = new StringBuilder();
+
+		for (ModCandidate mod : modCandidates) {
+			if (modListText.length() > 0) modListText.append('\n');
+
+			modListText.append("\t- ");
+			modListText.append(mod.getId());
+			modListText.append(' ');
+			modListText.append(mod.getVersion().getFriendlyString());
+
+			if (!mod.getParentMods().isEmpty()) {
+				modListText.append(" via ");
+				modListText.append(mod.getParentMods().iterator().next().getId());
+			}
+		}
 
 		int count = modCandidates.size();
 		Log.info(LogCategory.GENERAL, "Loading %d mod%s:%n%s", count, count != 1 ? "s" : "", modListText);
-
-		if (DependencyOverrides.INSTANCE.getDependencyOverrides().size() > 0) {
-			Log.info(LogCategory.GENERAL, "Dependencies overridden for \"%s\"", String.join(", ", DependencyOverrides.INSTANCE.getDependencyOverrides()));
-		}
 
 		Path cacheDir = gameDir.resolve(CACHE_DIR_NAME);
 		Path outputdir = cacheDir.resolve(PROCESSED_MODS_DIR_NAME);
