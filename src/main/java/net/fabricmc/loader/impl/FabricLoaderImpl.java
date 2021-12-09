@@ -71,6 +71,7 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 
 	public static final int ASM_VERSION = Opcodes.ASM9;
 
+	public static final String VERSION = "0.12.9";
 	public static final String MOD_ID = "fabricloader";
 
 	public static final String CACHE_DIR_NAME = ".fabric"; // relative to game dir
@@ -199,7 +200,8 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 		discoverer.addCandidateFinder(new DirectoryModCandidateFinder(gameDir.resolve("universe-reserved").resolve(getGameProvider().getRawGameVersion()), remapRegularMods));
 		discoverer.addCandidateFinder(new ArgumentModCandidateFinder(remapRegularMods));
 
-		modCandidates = discoverer.discoverMods(this);
+		Map<String, Set<ModCandidate>> envDisabledMods = new HashMap<>();
+		modCandidates = discoverer.discoverMods(this, envDisabledMods);
 
 		// apply version and dependency overrides
 
@@ -219,7 +221,7 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 
 		// resolve mods
 
-		modCandidates = ModResolver.resolve(modCandidates, getEnvironmentType());
+		modCandidates = ModResolver.resolve(modCandidates, getEnvironmentType(), envDisabledMods);
 
 		// dump mod list
 
