@@ -103,7 +103,7 @@ public final class Log4jLogHandler implements LogHandler {
 		if (version == null) return true;
 
 		try {
-			return Version.parse(version).compareTo(Version.parse("2.10")) < 0; // 2.10+ supports the log4j2.formatMsgNoLookups system property or doesn't lookup by default
+			return Version.parse(version).compareTo(Version.parse("2.16")) < 0; // 2.15+ doesn't lookup by default, but we patch anything up to 2.16 just in case
 		} catch (VersionParsingException e) {
 			Log.warn(LogCategory.GAME_PROVIDER, "Can't parse Log4J2 Manifest version %s", version, e);
 			return true;
@@ -123,7 +123,7 @@ public final class Log4jLogHandler implements LogHandler {
 				}
 			});
 		} catch (Exception e) {
-			Log.warn(LogCategory.GAME_PROVIDER, "Can't register Log4J2 PropertyChangeListener: %s", e);
+			Log.warn(LogCategory.GAME_PROVIDER, "Can't register Log4J2 PropertyChangeListener: %s", e.toString());
 		}
 
 		removeSubstitutionLookups();
@@ -134,6 +134,8 @@ public final class Log4jLogHandler implements LogHandler {
 
 		try {
 			LoggerContext context = LogManager.getContext(false);
+			if (context.getClass().getName().equals("org.apache.logging.log4j.simple.SimpleLoggerContext")) return; // -> no log4j core
+
 			Object config = context.getClass().getMethod("getConfiguration").invoke(context);
 			Object substitutor = config.getClass().getMethod("getStrSubstitutor").invoke(config);
 			Object varResolver = substitutor.getClass().getMethod("getVariableResolver").invoke(substitutor);
@@ -159,7 +161,7 @@ public final class Log4jLogHandler implements LogHandler {
 
 			Log.debug(LogCategory.GAME_PROVIDER, "Removed Log4J2 substitution lookups");
 		} catch (Exception e) {
-			Log.warn(LogCategory.GAME_PROVIDER, "Can't remove Log4J2 JNDI substitution Lookup: %s", e);
+			Log.warn(LogCategory.GAME_PROVIDER, "Can't remove Log4J2 JNDI substitution Lookup: %s", e.toString());
 		}
 	}
 }
