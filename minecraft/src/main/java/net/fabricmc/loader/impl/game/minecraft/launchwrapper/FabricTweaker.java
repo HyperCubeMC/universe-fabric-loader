@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.net.MalformedURLException;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,7 +61,7 @@ import net.fabricmc.loader.impl.util.log.Log;
 import net.fabricmc.loader.impl.util.log.LogCategory;
 
 public abstract class FabricTweaker extends FabricLauncherBase implements ITweaker {
-	private static final LogCategory LOG_CATEGORY = new LogCategory("GameProvider", "Tweaker");
+	private static final LogCategory LOG_CATEGORY = LogCategory.create("GameProvider", "Tweaker");
 	protected Arguments arguments;
 	private LaunchClassLoader launchClassLoader;
 	private final List<Path> classPath = new ArrayList<>();
@@ -126,11 +125,7 @@ public abstract class FabricTweaker extends FabricLauncherBase implements ITweak
 		classPath.clear();
 
 		for (URL url : launchClassLoader.getSources()) {
-			try {
-				classPath.add(UrlUtil.asPath(url));
-			} catch (URISyntaxException e) {
-				e.printStackTrace();
-			}
+			classPath.add(UrlUtil.asPath(url));
 		}
 
 		GameProvider provider = new MinecraftGameProvider();
