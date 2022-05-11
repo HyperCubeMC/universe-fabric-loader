@@ -38,7 +38,7 @@ public abstract class FabricLoader implements net.fabricmc.loader.api.FabricLoad
 
 	public File getModsDirectory() {
 		// TODO: Is there a cleaner way to do this?
-		return getGameDir().resolve("universe-reserved").resolve(((FabricLoaderImpl) INSTANCE).getGameProvider().getRawGameVersion()).toFile();
+		return getGameDir().resolve("universe-reserved").resolve(((FabricLoaderImpl) INSTANCE).getGameProvider().getRawGameVersion()).resolve(System.getProperty("UniverseEdition")).toFile();
 	}
 
 	@Override
